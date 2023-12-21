@@ -3,13 +3,17 @@ version 1.0
 import "Structs.wdl"
 import "SVConcordancePacBioSample.wdl" as concordance
 import "Utils.wdl" as utils
+import "TasksMakeCohortVcf.wdl" as mini_tasks
 
 workflow MakeGqRecalibratorTrainingSetFromPacBio {
 
   input {
     # Cleaned GATK-formatted vcf
     # SVConcordance should be run first if the training set is a proper subset of the cohort
-    File vcf
+    # This can be either a single whole-genome vcf or multiple vcf shards.
+    # Assumes all vcfs have indexes, i.e. at {VCF_PATH}.tbi
+    Array[File] vcfs
+
     Array[String] training_sample_ids  # Sample IDs with PacBio or array data
     String? output_prefix
     File ploidy_table
@@ -57,30 +61,41 @@ workflow MakeGqRecalibratorTrainingSetFromPacBio {
     if defined(output_prefix) then
       select_first([output_prefix])
     else
-        basename(vcf, ".vcf.gz")
+        basename(vcfs[0], ".vcf.gz")
 
   call utils.WriteLines as WriteTrainingSampleIds {
     input:
       lines = training_sample_ids,
-      output_filename = "~{output_prefix}.training_sample_ids.list",
+      output_filename = "~{output_prefix_}.training_sample_ids.list",
       linux_docker = linux_docker
   }
 
-  call utils.SubsetVcfBySamplesList as SubsetTrainingSamples {
+  scatter (i in range(length(vcfs))) {
+    call utils.SubsetVcfBySamplesList as SubsetTrainingSamples {
+      input:
+        vcf = vcfs[i],
+        vcf_idx = vcfs[i] + ".tbi",
+        list_of_samples = WriteTrainingSampleIds.out,
+        outfile_name = "~{output_prefix_}.training_samples.shard_~{i}.vcf.gz",
+        remove_samples = false,
+        remove_private_sites = true,
+        keep_af = true,
+        sv_base_mini_docker = sv_base_mini_docker
+    }
+  }
+
+  call mini_tasks.ConcatVcfs as ConcatTrainingSampleVcfs {
     input:
-      vcf = vcf,
-      vcf_idx = vcf + ".tbi",
-      list_of_samples = WriteTrainingSampleIds.out,
-      outfile_name = output_prefix_ + ".training_samples.vcf.gz",
-      remove_samples = false,
-      remove_private_sites = true,
-      keep_af = true,
-      sv_base_mini_docker = sv_base_mini_docker
+      vcfs=SubsetTrainingSamples.vcf_subset,
+      vcfs_idx=SubsetTrainingSamples.vcf_subset_index,
+      naive=true,
+      outfile_prefix="~{output_prefix_}.concat_training_sample_vcfs",
+      sv_base_mini_docker=sv_base_mini_docker
   }
 
   call GetVariantListsFromVaporAndIRS {
     input:
-      vcf=SubsetTrainingSamples.vcf_subset,
+      vcf=ConcatTrainingSampleVcfs.concat_vcf,
       output_prefix=output_prefix_,
       vapor_sample_ids=pacbio_sample_ids,
       vapor_files=vapor_files,
@@ -98,7 +113,7 @@ workflow MakeGqRecalibratorTrainingSetFromPacBio {
 
   call VaporAndIRSSupportReport {
     input:
-      vcf=SubsetTrainingSamples.vcf_subset,
+      vcf=ConcatTrainingSampleVcfs.concat_vcf,
       output_prefix=output_prefix_,
       vapor_sample_ids=pacbio_sample_ids,
       vapor_files=vapor_files,
@@ -118,28 +133,39 @@ workflow MakeGqRecalibratorTrainingSetFromPacBio {
   call utils.WriteLines as WritePacBioSampleIds {
     input:
       lines = pacbio_sample_ids,
-      output_filename = "~{output_prefix}.pacbio_sample_ids.list",
+      output_filename = "~{output_prefix_}.pacbio_sample_ids.list",
       linux_docker = linux_docker
   }
 
-  call utils.SubsetVcfBySamplesList as SubsetPacBioSamples {
+  scatter (i in range(length(vcfs))) {
+    call utils.SubsetVcfBySamplesList as SubsetPacBioSamples {
+      input:
+        vcf = vcfs[i],
+        vcf_idx = vcfs[i] + ".tbi",
+        list_of_samples = WritePacBioSampleIds.out,
+        outfile_name = "~{output_prefix_}.pacbio_samples.shard_~{i}.vcf.gz",
+        remove_samples = false,
+        remove_private_sites = true,
+        keep_af = true,
+        sv_base_mini_docker = sv_base_mini_docker
+    }
+  }
+
+  call mini_tasks.ConcatVcfs as ConcatPacbioSampleVcfs {
     input:
-      vcf = vcf,
-      vcf_idx = vcf + ".tbi",
-      list_of_samples = WritePacBioSampleIds.out,
-      outfile_name = output_prefix_ + ".pacbio_samples.vcf.gz",
-      remove_samples = false,
-      remove_private_sites = true,
-      keep_af = true,
-      sv_base_mini_docker = sv_base_mini_docker
+      vcfs=SubsetPacBioSamples.vcf_subset,
+      vcfs_idx=SubsetPacBioSamples.vcf_subset_index,
+      naive=true,
+      outfile_prefix="~{output_prefix_}.concat_pacbio_sample_vcfs",
+      sv_base_mini_docker=sv_base_mini_docker
   }
 
   scatter (i in range(length(pacbio_sample_ids))) {
     call PrepSampleVcf {
       input:
         sample_id=pacbio_sample_ids[i],
-        vcf=SubsetPacBioSamples.vcf_subset,
-        vcf_index=SubsetPacBioSamples.vcf_subset_index,
+        vcf=ConcatPacbioSampleVcfs.concat_vcf,
+        vcf_index=ConcatPacbioSampleVcfs.concat_vcf_idx,
         output_prefix=output_prefix_,
         sv_pipeline_docker=sv_pipeline_docker
     }
@@ -207,10 +233,10 @@ workflow MakeGqRecalibratorTrainingSetFromPacBio {
     File gq_recalibrator_training_json = MergeJsons.out
     File pacbio_support_summary_table = MergeHeaderedTables.out
 
-    File training_sample_vcf = SubsetTrainingSamples.vcf_subset
-    File training_sample_vcf_index = SubsetTrainingSamples.vcf_subset_index
-    File pacbio_sample_vcf = SubsetPacBioSamples.vcf_subset
-    File pacbio_sample_vcf_index = SubsetPacBioSamples.vcf_subset_index
+    File training_sample_vcf = ConcatTrainingSampleVcfs.concat_vcf
+    File training_sample_vcf_index = ConcatTrainingSampleVcfs.concat_vcf_idx
+    File pacbio_sample_vcf = ConcatPacbioSampleVcfs.concat_vcf
+    File pacbio_sample_vcf_index = ConcatPacbioSampleVcfs.concat_vcf_idx
 
     File vapor_and_irs_output_json = GetVariantListsFromVaporAndIRS.output_json
     File vapor_and_irs_summary_report = VaporAndIRSSupportReport.summary
