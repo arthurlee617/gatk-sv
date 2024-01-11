@@ -116,7 +116,7 @@ svtk vcf2bed \
 #Find CNVs appearing in the same samples that meet merging criteria
 for CNV in DEL DUP; do
   awk -v OFS="\t" -v CNV=${CNV} -v MAXOVR=${MAXOVR} \
-    '{ if ($5==CNV) print $1"_"$6, $2, $3, $4, $2, $3, $3-$2, MAXOVR*($3-$2) }' \
+    '{ if ($5 == "DEL" || $5 == "DUP") print $1"_"$6, $2, $3, $4, $2, $3, $3-$2, MAXOVR*($3-$2) }' \
     ${PROCDIR}/biallelic_depth_CNVs.bed \
     | sed 's/\.[0-9]+\t/\t/g' \
     | awk -v OFS="\t" -v MAXPAD=${MAXPAD} '{ if ($NF>MAXPAD) $NF=MAXPAD; print $1, $2, $3, $4, $5, $6, $7, $8 }' \
