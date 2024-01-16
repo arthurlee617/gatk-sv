@@ -37,6 +37,8 @@ workflow MosaicManualCheck{
     RuntimeAttr? runtime_attr_concat_pesr_bed
     RuntimeAttr? runtime_attr_concat_depth_plot
     RuntimeAttr? runtime_attr_concat_pesr_plot
+    RuntimeAttr? runtime_attr_depth_potential
+    RuntimeAttr? runtime_attr_depth_rdtest
   }
   scatter (i in range(length(per_batch_clustered_pesr_vcf_list))) {
     call mosaic_pesr_part1.Mosaic as pesr1{
@@ -54,7 +56,7 @@ workflow MosaicManualCheck{
     }
   }
   scatter (i in range(length(clustered_depth_vcfs))) {
-    call depth_mosaic.Mosaic as depth{
+    call depth_mosaic.RdTest as rdtest{
       input:
         name=basename(clustered_depth_vcfs[i]),
         metrics=agg_metrics[i],
@@ -67,9 +69,20 @@ workflow MosaicManualCheck{
         fam_file=fam_file,
         median_file=median_files[i],
         sv_pipeline_docker=sv_pipeline_docker,
-        sv_pipeline_rdtest_docker=sv_pipeline_rdtest_docker
-        
+        sv_pipeline_rdtest_docker=sv_pipeline_rdtest_docker,
+        runtime_attr_override = runtime_attr_mosaic_rdtest
     }
+
+      call depth_mosaic.GetPotential as getpotential{
+      input:
+        name=basename(clustered_depth_vcfs[i]),
+        metrics=agg_metrics[i],
+        cutoffs=RF_cutoffs[i],
+        rare_cutoff=rare_cutoff,
+        depth_vcf=clustered_depth_vcfs[i],
+        lookup=LookupGen.depthlookup,
+        sv_pipeline_docker=sv_pipeline_docker,
+        runtime_attr_override = runtime_attr_mosaic_getpotential
   }
   call preRF.make_cohort_VCFs as LookupGen {
     input:
