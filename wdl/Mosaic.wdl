@@ -16,9 +16,12 @@ import "MosaicPesrPart2.wdl" as mosaic_pesr_part2
 workflow MosaicManualCheck{
   input{
     File fam_file
-    Int rare_cutoff
+    Int? rare_cutoff
     File outlier
     String prefix
+
+    File sd_blacklist
+    File igl_blacklist
 
     Array[File] per_batch_clustered_pesr_vcf_list # preRF 
     Array[File] clustered_depth_vcfs
